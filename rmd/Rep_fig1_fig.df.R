@@ -1,0 +1,330 @@
+## ----setup, include=FALSE-----------------------------------------------------
+knitr::opts_chunk$set(echo = TRUE)
+
+
+## -----------------------------------------------------------------------------
+# library(devtools)
+# install_github(repo="ryantibs/best-subset", subdir="bestsubset")
+library(bestsubset)
+glmnet.control(fdev=0)
+# library(devtools)
+# Install the full XCode application from App Store. Command line tools are not enough.
+# Do not uninstall XCode!!! It will mess up your R package installation.
+# install_github("maryclare/powopt")
+library(powopt)
+rm(list=ls())
+
+
+## -----------------------------------------------------------------------------
+n = 70; p = 30 # Size of training set, and number of predictors
+nval = n # Size of validation set
+
+# nrep should be 500, but we use 10 for speed
+nrep = 500 # Number of repetitions
+
+# nrep = 500 # Number of repetitions
+seed = 0 # Random number generator seed
+s = 5 # Number of nonzero coefficients
+beta.type = 2 # Coefficient type
+
+
+## -----------------------------------------------------------------------------
+set.seed(seed)
+xy.obj = sim.xy(n,p,nval,rho=0.35,s=s,beta.type=beta.type,snr=0.7)
+x = xy.obj$x
+y = xy.obj$y
+mu = as.numeric(x %*% xy.obj$beta)
+sigma = xy.obj$sigma
+nlam = 300
+# nrel = 9
+
+ip.las = matrix(0,nrep,p+1)
+ip.fs = matrix(0,nrep,p+1)
+ip.bs = matrix(0,nrep,p+1)
+ip.pow_25 = matrix(0,nrep,p+1)
+ip.pow_50 = matrix(0,nrep,p+1)
+ip.pow_75 = matrix(0,nrep,p+1)
+
+for (r in 1:nrep) {
+  cat(r,"... ")
+  eps = rnorm(n)*sigma
+  y = mu + eps
+  
+  fit.lasso = lasso(x,y,intercept=FALSE,nlam=nlam,nrel=1) # we don't use nrel = nrel (relaxed lasso) as in fig.df.R, instead we use nrel = 1 which means the regular lasso
+  beta.las = as.matrix(coef(fit.lasso))
+  nzs.las = colSums(beta.las != 0)
+  j = nlam - rev(match(p:0, rev(nzs.las), NA))
+  ind = j + 1
+  yhat.las = (x %*% beta.las)[,ind]
+  ip.las[r,] = colSums(yhat.las * eps)
+  
+  # Create lambdas for the power penalty
+  # n <- 70  # example number of observations
+  # alpha <- 1
+  
+  x_standardized <- apply(x, 2, function(z) {(z)/(sqrt(mean(z^2) - mean(z)^2))})
+
+  # Calculate <x_j, y> for each j on standardized x
+  x_y_dot_standardized <- colSums(x_standardized * y)
+  
+  # Find the maximum absolute value of <x_j, y> on standardized x
+  max_abs_x_y_dot_standardized <- max(abs(x_y_dot_standardized))
+  
+  # q = 0.25
+  q = 0.25
+  
+  # Calculate lambda_max
+  lambda_max_standardized_25 <- (1/n)*(max_abs_x_y_dot_standardized / (2-q))^(2-q) * (2-2*q)^(1-q)
+  
+  # Extract lambda_max from the glmnet model
+  # lambda_max_glmnet <- fit.lasso$lambda[1]
+  
+  epsilon <- 0.0000001
+  
+  # Calculate lambda_min
+  lambda_min_25 <- epsilon * lambda_max_standardized_25
+  
+  # Generate the sequence of lambda values on a log scale
+  lambda_seq_manual_25 <- exp(seq(log(lambda_max_standardized_25), 
+                               log(lambda_min_25), length.out = nlam))
+  # print(lambda_max_standardized)
+  # print(lambda_max_glmnet)
+    
+  # plot(fit.lasso$lambda, lambda_seq_manual)
+  # abline(a = 0, b = 1)  
+  
+  # lambda <- (gamma(1/q)/gamma(3/q))^(-q/2)
+  beta.pow_25 = matrix(0,p,nlam)
+  beta.pow_25[,1] = powCD(X = x_standardized, y = y, 
+                       sigma.sq = n, lambda = lambda_seq_manual_25[1], 
+                       q = q, rand.restart = 0, start = rep(0,p))
+  for (i in 2:nlam) {
+    beta.pow_25[,i] = powCD(X = x_standardized, y = y, 
+                         sigma.sq = n, lambda = lambda_seq_manual_25[i], q = q, 
+                         rand.restart = 0, start = beta.pow_25[,i-1])
+  }
+
+  nzs.pow_25 = colSums(beta.pow_25 != 0)
+  k_25 = nlam - rev(match(p:0, rev(nzs.pow_25), NA))
+  ind.pow_25 = k_25 + 1
+  yhat.pow_25 = (x %*% beta.pow_25)[,ind.pow_25]
+  
+  
+  ip.pow_25[r,] = colSums(yhat.pow_25 * eps)
+  
+  
+  # q = 0.50
+  q = 0.5
+  
+  # Calculate lambda_max
+  lambda_max_standardized_50 <- (1/n)*(max_abs_x_y_dot_standardized / (2-q))^(2-q) * (2-2*q)^(1-q)
+  
+  # Extract lambda_max from the glmnet model
+  # lambda_max_glmnet <- fit.lasso$lambda[1]
+  
+  epsilon <- 0.000001
+  
+  # Calculate lambda_min
+  lambda_min_50 <- epsilon * lambda_max_standardized_50
+  
+  # Generate the sequence of lambda values on a log scale
+  lambda_seq_manual_50 <- exp(seq(log(lambda_max_standardized_50), 
+                               log(lambda_min_50), length.out = nlam))
+  # print(lambda_max_standardized)
+  # print(lambda_max_glmnet)
+    
+  # plot(fit.lasso$lambda, lambda_seq_manual)
+  # abline(a = 0, b = 1)  
+  
+  # lambda <- (gamma(1/q)/gamma(3/q))^(-q/2)
+  beta.pow_50 = matrix(0,p,nlam)
+  beta.pow_50[,1] = powCD(X = x_standardized, y = y, 
+                       sigma.sq = n, lambda = lambda_seq_manual_50[1], 
+                       q = q, rand.restart = 0, start = rep(0,p))
+  for (i in 2:nlam) {
+    beta.pow_50[,i] = powCD(X = x_standardized, y = y, 
+                         sigma.sq = n, lambda = lambda_seq_manual_50[i], q = q, 
+                         rand.restart = 0, start = beta.pow_50[,i-1])
+  }
+
+  nzs.pow_50 = colSums(beta.pow_50 != 0)
+  k_50 = nlam - rev(match(p:0, rev(nzs.pow_50), NA))
+  ind.pow_50 = k_50 + 1
+  yhat.pow_50 = (x %*% beta.pow_50)[,ind.pow_50]
+  
+  
+  ip.pow_50[r,] = colSums(yhat.pow_50 * eps)
+  
+  
+  # q = 0.75
+  q = 0.75
+  
+  # Calculate lambda_max
+  lambda_max_standardized_75 <- (1/n)*(max_abs_x_y_dot_standardized / (2-q))^(2-q) * (2-2*q)^(1-q)
+  
+  # Extract lambda_max from the glmnet model
+  # lambda_max_glmnet <- fit.lasso$lambda[1]
+  
+  epsilon <- 0.00001
+  
+  # Calculate lambda_min
+  lambda_min_75 <- epsilon * lambda_max_standardized_75
+  
+  # Generate the sequence of lambda values on a log scale
+  lambda_seq_manual_75 <- exp(seq(log(lambda_max_standardized_75), 
+                               log(lambda_min_75), length.out = nlam))
+  # print(lambda_max_standardized)
+  # print(lambda_max_glmnet)
+    
+  # plot(fit.lasso$lambda, lambda_seq_manual)
+  # abline(a = 0, b = 1)  
+  
+  # lambda <- (gamma(1/q)/gamma(3/q))^(-q/2)
+  beta.pow_75 = matrix(0,p,nlam)
+  beta.pow_75[,1] = powCD(X = x_standardized, y = y, 
+                       sigma.sq = n, lambda = lambda_seq_manual_75[1], 
+                       q = q, rand.restart = 0, start = rep(0,p))
+  for (i in 2:nlam) {
+    beta.pow_75[,i] = powCD(X = x_standardized, y = y, 
+                         sigma.sq = n, lambda = lambda_seq_manual_75[i], q = q, 
+                         rand.restart = 0, start = beta.pow_75[,i-1])
+  }
+
+  nzs.pow_75 = colSums(beta.pow_75 != 0)
+  k_75 = nlam - rev(match(p:0, rev(nzs.pow_75), NA))
+  ind.pow_75 = k_75 + 1
+  yhat.pow_75 = (x %*% beta.pow_75)[,ind.pow_75]
+  
+  
+  ip.pow_75[r,] = colSums(yhat.pow_75 * eps)
+  
+  
+  
+  
+  yhat.fs = predict(fs(x,y,intercept=FALSE))[, 1:31] # At some point we should figure out why it's giving us 32
+  # yhat.bs = bestsubset::predict.bs(bestsubset::bs(x,y,intercept=FALSE))
+  ip.fs[r,] = colSums(yhat.fs * eps)
+  # ip.bs[r,] = colSums(yhat.bs * eps)
+}
+
+df.pow_25 = colMeans(ip.pow_25, na.rm=TRUE) / sigma^2
+df.pow_50 = colMeans(ip.pow_50, na.rm=TRUE) / sigma^2
+df.pow_75 = colMeans(ip.pow_75, na.rm=TRUE) / sigma^2
+
+df.las = colMeans(ip.las, na.rm=TRUE) / sigma^2
+# df.las = matrix(df.las, p+1, nrel, byrow=TRUE)
+df.fs = colMeans(ip.fs, na.rm=TRUE) / sigma^2
+df.bs = colMeans(ip.bs, na.rm=TRUE) / sigma^2
+
+save(list=ls(),file="sim.df_new_epsilon.rda")
+
+
+## -----------------------------------------------------------------------------
+# Run the code below to reproduce the df figure without rerunning the sims
+library(bestsubset)
+rm(list = ls())
+load("./sim.df_new.rda")
+# Plot the results
+dat = data.frame(x=rep(0:p,5),
+                 y=c(df.fs,df.las,df.pow_25,df.pow_50,df.pow_75),
+                 Method=factor(rep(c("Forward stepwise","Lasso","Power Penalty q = 0.25","Power Penalty q = 0.5", "Power Penalty q = 0.75"),
+                                    rep(p+1,5))))
+
+ggplot(dat, aes(x=x,y=y,color=Method)) +
+  xlab("Number of nonzero coefficients") +
+  ylab("Degrees of freedom") +
+  geom_line(lwd=0.5, color="black", linetype=3, aes(x,x)) +
+  geom_line(lwd=1) + geom_point(pch=19) +
+    theme_bw() + theme(legend.just=c(1,0), legend.pos=c(0.95,0.05))
+ggsave("df4.pdf", height=6, width=8, device="pdf")
+
+
+## -----------------------------------------------------------------------------
+# Create the ggplot
+dat_las <- data.frame(lambda = fit.lasso$lambda, nzs = nzs.las)
+ggplot(dat_las, aes(x = log(lambda), y = nzs)) +
+  geom_point() +  # Add points
+  geom_line() +   # Add lines
+  labs(
+    title = "Lambda against the # of nonzero coefficients for the lasso",
+    x = "log(lambda)",
+    y = "Number of nonzero coefficients"
+  ) +
+  theme_minimal()
+ggsave("lambda_nzs_lasso.pdf", height=6, width=8, device="pdf")
+
+
+## -----------------------------------------------------------------------------
+# Create the ggplot
+dat25 <- data.frame(lambda = lambda_seq_manual_25, nzs = nzs.pow_25)
+ggplot(dat25, aes(x = log(lambda), y = nzs)) +
+  geom_point() +  # Add points
+  geom_line() +   # Add lines
+  labs(
+    title = "Lambda vs. the # of nonzero coefficients for power penalty regression, q = 0.25",
+    x = "log(lambda)",
+    y = "Number of nonzero coefficients"
+  ) +
+  theme_minimal()
+ggsave("lambda_nzs_25_epsilon.pdf", height=6, width=8, device="pdf")
+
+
+## -----------------------------------------------------------------------------
+# Create the ggplot
+dat50 <- data.frame(lambda = lambda_seq_manual_50, nzs = nzs.pow_50)
+ggplot(dat50, aes(x = log(lambda), y = nzs)) +
+  geom_point() +  # Add points
+  geom_line() +   # Add lines
+  labs(
+    title = "Lambda vs. the # of nonzero coefficients for power penalty regression, q = 0.5",
+    x = "log(lambda)",
+    y = "Number of nonzero coefficients"
+  ) +
+  theme_minimal()
+ggsave("lambda_nzs_50_epsilon.pdf", height=6, width=8, device="pdf")
+
+
+## -----------------------------------------------------------------------------
+# Create the ggplot
+dat75 <- data.frame(lambda = lambda_seq_manual_75, nzs = nzs.pow_75)
+ggplot(dat75, aes(x = log(lambda), y = nzs)) +
+  geom_point() +  # Add points
+  geom_line() +   # Add lines
+  labs(
+    title = "Lambda vs. the # of nonzero coefficients for power penalty regression, q = 0.75",
+    x = "log(lambda)",
+    y = "Number of nonzero coefficients"
+  ) +
+  theme_minimal()
+ggsave("lambda_nzs_75.pdf", height=6, width=8, device="pdf")
+
+
+## -----------------------------------------------------------------------------
+rm(list=ls())
+load("./sim.df_new_epsilon.rda")
+dat_las <- data.frame(lambda = fit.lasso$lambda, nzs = nzs.las)
+dat25 <- data.frame(lambda = lambda_seq_manual_25, nzs = nzs.pow_25)
+dat50 <- data.frame(lambda = lambda_seq_manual_50, nzs = nzs.pow_50)
+dat75 <- data.frame(lambda = lambda_seq_manual_75, nzs = nzs.pow_75)
+# Add a group identifier to each data frame
+dat_las$group <- "Lasso"
+dat25$group <- "q = 0.25"
+dat50$group <- "q = 0.50"
+dat75$group <- "q = 0.75"
+
+# Combine all data frames into one
+combined_df <- rbind(dat_las, dat25, dat50, dat75)
+
+# Create the ggplot
+ggplot(combined_df, aes(x = log(lambda), y = nzs, color = group)) +
+  geom_line() +  # Add lines
+  geom_point() + # Add points for emphasis
+  labs(
+    title = "Comparison of lambda vs the number of nonzero coefficients",
+    x = "log(lambda)",
+    y = "Number of nonzero coefficients",
+    color = "Method"
+  ) +
+  theme_minimal()
+ggsave("lambda_nzs_all_epsilon.pdf", height=6, width=8, device="pdf")
+

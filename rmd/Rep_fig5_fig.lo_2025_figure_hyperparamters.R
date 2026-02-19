@@ -1,0 +1,262 @@
+## ----setup, include=FALSE-----------------------------------------------------
+knitr::opts_chunk$set(echo = TRUE)
+
+
+## -----------------------------------------------------------------------------
+rm(list=ls())
+library(bestsubset)
+n = 50; p = 100; s = 5
+file.list = system(paste0("ls Rep_rds_lo_2025_new/rce_files/rce.sim.n",n,".p",p,".*.rds"),intern=TRUE)
+#n = 50; p = 1000; s = 5
+#file.list = system(paste0("ls Rep_rds_hi5_2025_new/sim.n",n,".p",p,".*.rds"),intern=TRUE)
+# method.nums = c(3,2,1,4,5,6,7)
+# method.names = c("Best subset","Forward stepwise","Lasso","PowCD", "Relaxed lasso",
+#                  "L0Learn 1", "L0Learn 2")
+
+method.nums = c(2,1,3,4)
+method.names = c("Forward stepwise","Lasso","Relaxed lasso","PowCD")
+
+# sim.obj = readRDS(paste0("~/Downloads/Research_Spring_2025/",file.list[1]))
+# Decode column indices into (lambda index, gamma index) for Relaxed Lasso
+# j : column index (can be a single value or a vector of values)
+# L : number of lambda values (nlambda)
+# G : number of gamma values (nrelax)
+decode_idx_relaxed <- function(j, L, G) {
+  # lambda changes fastest (inner loop), gamma changes slowest (outer loop)
+  lambda_idx <- ((j - 1) %% L) + 1 # remainder after division (modulus)
+  gamma_idx  <- ((j - 1) %/% L) + 1 # quotient after division (floor division)
+  
+  # Return as a data frame for readability
+  data.frame(col = j, lambda = lambda_idx, gamma = gamma_idx)
+}
+
+# Decode column indices into (lambda index, q index) for Power penalty
+# j : column index (can be a single value or a vector of values)
+# L : number of lambda values (nlambda)
+# q : number of gamma values (nq)
+decode_idx_pow <- function(j, L, q) {
+  # lambda changes fastest (inner loop), q changes slowest (outer loop)
+  lambda_idx <- ((j - 1) %% L) + 1 # remainder after division (modulus)
+  q_idx  <- ((j - 1) %/% L) + 1 # quotient after division (floor division)
+  
+  # Return as a data frame for readability
+  data.frame(col = j, lambda = lambda_idx, q = q_idx)
+}
+
+## Example usage
+# L <- 50   # nlambda
+# G <- 10   # nrelax
+
+# df1 = decode_idx(c(1, 50, 51, 100, 500), L, G)
+
+
+## -----------------------------------------------------------------------------
+for (f in file.list) {
+     full_path <- file.path("~/Downloads/Research_Spring_2025", f)
+     sim.obj <- readRDS(full_path)
+     cat("File:", full_path, "\n")
+     cat("Tuning oracle:", sim.obj$tun.ora, "\n")
+     # gamma index for relaxed lasso
+     cat("gamma index:", decode_idx_relaxed(sim.obj$tun.ora[3], L = 50, G = 10)$gamma, "\n")
+     gamma_ora = seq(0, 1, length.out = 10)[decode_idx_relaxed(sim.obj$tun.ora[3], L = 50, G = 10)$gamma]
+     cat("gamma =", gamma_ora, "\n")
+     # q index for powcd
+     cat("q index:", decode_idx_pow(sim.obj$tun.ora[4], L = 50, q = 10)$q, "\n")
+     q_ora = seq(0.1, 1, length.out = 10)[decode_idx_pow(sim.obj$tun.ora[4], L = 50, q = 10)$q]
+     cat("q =", q_ora, "\n")
+     cat("\n")
+     
+     cat("Tuning validation: \n")
+     # gamma index for relaxed lasso
+     cat("gamma (val) index:", decode_idx_relaxed(sim.obj$tun.val[,3], L = 50, G = 10)$gamma, "\n")
+     gamma_val = seq(0, 1, length.out = 10)[decode_idx_relaxed(sim.obj$tun.val[,3], L = 50, G = 10)$gamma]
+     cat("gamma (val) =", gamma_val, "\n")
+     avg_gamma_val = mean(gamma_val)
+     cat("avg gamma (val) =", avg_gamma_val, "\n")
+     
+     # q index for powcd
+     cat("q (val) index:", decode_idx_pow(sim.obj$tun.val[,4], L = 50, q = 10)$q, "\n")
+     q_val = seq(0.1, 1, length.out = 10)[decode_idx_pow(sim.obj$tun.val[,4], L = 50, q = 10)$q]
+     cat("q (val) =", q_val, "\n")
+     avg_q_val = mean(q_val)
+     cat("avg q (val) =", avg_q_val, "\n")
+     
+     # print sd
+     cat("sd q (val) =", sd(q_val), "\n")
+     cat("--------------------------------------------------\n")
+}
+
+
+## -----------------------------------------------------------------------------
+plot.tuning.value <- function(file.list,
+                              what = c("gamma.ora","q.ora","gamma.val","q.val"),
+                              # grids (defaults per your code)
+                              gamma_grid = seq(0, 1,  length.out = 10),
+                              q_grid     = seq(0.1, 1, length.out = 10),
+                              # index grids to decode (kept for completeness)
+                              L.relax = 50, G.relax = 10,   # relaxed lasso
+                              L.pow   = 50, Q.pow  = 10,    # powcd
+                              row = c("beta","rho","snr"),
+                              col = c("rho","beta","snr"),
+                              main = NULL,
+                              make.pdf = TRUE, fig.dir = ".", file.name = "tuning.value",
+                              w = 8, h = 6,
+                              base.dir = NULL,
+                              filter_beta = NULL,   # e.g. 2 or "Beta-type 2"
+                              filter_rho  = NULL) { # e.g. 0.35 or "Correlation 0.35"
+
+  if (!require("ggplot2", quietly = TRUE)) stop("Need ggplot2")
+  what = match.arg(what)
+  row  = match.arg(row); col = match.arg(col)
+
+  decode_idx_relaxed <- function(j, L, G) {
+    lambda_idx <- ((j - 1) %% L) + 1
+    gamma_idx  <- ((j - 1) %/% L) + 1
+    data.frame(col = j, lambda = lambda_idx, gamma = gamma_idx)
+  }
+  decode_idx_pow <- function(j, L, Q) {
+    lambda_idx <- ((j - 1) %% L) + 1
+    q_idx      <- ((j - 1) %/% L) + 1
+    data.frame(col = j, lambda = lambda_idx, q = q_idx)
+  }
+
+  # collect rows
+  rows <- list()
+  for (f in file.list) {
+    f_exp <- path.expand(f)
+    if (!file.exists(f_exp) && !is.null(base.dir)) {
+      f_exp <- path.expand(file.path(base.dir, f))
+    }
+    if (!file.exists(f_exp)) stop(sprintf("Cannot find file: %s", f))
+
+    sim.obj <- readRDS(f_exp)
+
+    val <- switch(what,
+      gamma.ora = {
+        gidx <- decode_idx_relaxed(sim.obj$tun.ora[3], L.relax, G.relax)$gamma
+        gamma_grid[gidx]
+      },
+      q.ora = {
+        qidx <- decode_idx_pow(sim.obj$tun.ora[4], L.pow, Q.pow)$q
+        q_grid[qidx]
+      },
+      gamma.val = {
+        gidx_vec <- decode_idx_relaxed(sim.obj$tun.val[,3], L.relax, G.relax)$gamma
+        mean(gamma_grid[gidx_vec], na.rm = TRUE)
+      },
+      q.val = {
+        qidx_vec <- decode_idx_pow(sim.obj$tun.val[,4], L.pow, Q.pow)$q
+        mean(q_grid[qidx_vec], na.rm = TRUE)
+      }
+    )
+
+    rows[[length(rows)+1]] <- data.frame(
+      file  = f_exp,
+      beta  = sim.obj$beta.type,
+      rho   = sim.obj$rho,
+      snr   = as.numeric(sim.obj$snr),
+      val   = as.numeric(val)
+    )
+  }
+  dat <- do.call(rbind, rows)
+
+  # labels & ordering
+  dat$beta <- factor(dat$beta); levels(dat$beta) <- paste("Beta-type", levels(dat$beta))
+  dat$rho  <- factor(dat$rho);  levels(dat$rho)  <- paste("Correlation", levels(dat$rho))
+  
+  if (!is.null(filter_beta)) {
+    if (is.numeric(filter_beta)) filter_beta <- paste0("Beta-type ", filter_beta)
+    dat <- subset(dat, beta %in% filter_beta)
+  }
+  if (!is.null(filter_rho)) {
+    if (is.numeric(filter_rho)) filter_rho <- paste0("Correlation ", filter_rho)
+    dat <- subset(dat, rho %in% filter_rho)
+  }
+  
+  
+  if (nrow(dat) > 1) {
+    o <- order(xtfrm(dat$beta), xtfrm(dat$rho), dat$snr)
+    dat <- dat[o, , drop = FALSE]
+  }
+
+  dat$panel_id <- interaction(dat$beta, dat$rho, drop = TRUE)
+  dat$panel_n  <- ave(dat$val, dat$panel_id, FUN = length)
+
+  snr.breaks <- round(exp(seq(from = min(log(dat$snr)),
+                              to   = max(log(dat$snr)), length = 4)), 2)
+
+  ylab_txt <- switch(what,
+    gamma.ora = "Oracle gamma (Relaxed lasso)",
+    q.ora     = "Oracle q (PowCD)",
+    gamma.val = "Validation gamma (Relaxed lasso)",
+    q.val     = "Validation q (PowCD)"
+  )
+
+  gp <- ggplot(dat, aes(x = snr, y = val)) +
+    geom_point() +
+    geom_line(data = subset(dat, panel_n >= 2),
+              aes(group = interaction(beta, rho)), linewidth = 0.6) +
+    xlab("Signal-to-noise ratio") +
+    ylab(ylab_txt) +
+    scale_x_continuous(trans = "log", breaks = snr.breaks) +
+    scale_y_continuous(limits = c(0, 1)) +            # force 0..1
+    facet_grid(formula(paste(row, "~", col))) +
+    theme_bw() +
+    theme(legend.position = "none")
+
+  if (!is.null(main)) gp <- gp + ggtitle(main)
+  if (make.pdf) {
+    dir.create(path.expand(fig.dir), showWarnings = FALSE, recursive = TRUE)
+    ggsave(sprintf("%s/%s.pdf", path.expand(fig.dir), file.name),
+           gp, width = w, height = h, device = "pdf")
+  }
+  return(gp)
+}
+
+
+## -----------------------------------------------------------------------------
+# 1) Relaxed lasso oracle gamma
+plot.tuning.value(file.list, what="gamma.ora", base.dir=base.dir,
+                  row="beta", col="rho",
+                  fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+                  file.name=sprintf("sim.n%d.p%d.ora.gamma", n, p),
+                  main=sprintf("n=%d, p=%d, s=%d", n,p,s))
+
+# 2) PowCD oracle q
+plot.tuning.value(file.list, what="q.ora", base.dir=base.dir,
+                  row="beta", col="rho",
+                  fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+                  file.name=sprintf("sim.n%d.p%d.ora.q", n, p),
+                  main=sprintf("n=%d, p=%d, s=%d", n,p,s))
+
+# 3) Relaxed lasso validation gamma
+plot.tuning.value(file.list, what="gamma.val", base.dir=base.dir,
+                  row="beta", col="rho",
+                  fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+                  file.name=sprintf("sim.n%d.p%d.val.gamma", n, p),
+                  main=sprintf("n=%d, p=%d, s=%d", n,p,s))
+
+# 4) PowCD validation q
+plot.tuning.value(file.list, what="q.val", base.dir=base.dir,
+                  row="beta", col="rho",
+                  fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+                  file.name=sprintf("sim.n%d.p%d.val.q", n, p),
+                  main=sprintf("n=%d, p=%d, s=%d", n,p,s))
+
+
+
+## -----------------------------------------------------------------------------
+library(ggplot2)
+plot.tuning.value(file.list, what="q.val", base.dir=base.dir,
+                  row="beta", col="rho", 
+                  make.pdf = FALSE, # don't make pdf here!
+                  filter_beta = 2,
+                  filter_rho  = 0.35,
+                  fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+                  file.name=sprintf("sim.n%d.p%d.val.q", n, p),
+                  main=sprintf("n=%d, p=%d, s=%d", n,p,s)) + theme(strip.background = element_blank(), strip.text = element_blank())
+
+ggsave(filename = sprintf("~/Downloads/Research_Spring_2025/fig5_supp_plots/poster.sim.n%d.p%d.beta2.rho0.35.val.q.pdf",
+                   n, p),
+       width = 6, height = 4)
+

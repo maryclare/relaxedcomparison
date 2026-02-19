@@ -1,0 +1,162 @@
+---
+title: "ex.sim.master"
+author: "Ning Duan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(bestsubset)
+glmnet.control(fdev=0)
+library(devtools)
+# install_github("maryclare/powopt")
+library(powopt)
+rm(list=ls())
+```
+
+
+# Define three functions powCD_wrapper, coef.powCD, predict.powCD
+
+```{r}
+powCD_wrapper <- function(x, y, q, nlambda) {
+  # Standardize data (based on glmnet code)
+yscale <-sqrt(sum(y^2)) 
+ystd <- y/yscale
+xscales <- apply(x, 2, function(xx) {
+  sqrt(mean((xx - mean(xx))^2))
+})
+xstd <- sweep(x, 2, xscales, "/")
+sv <- svd(xstd)
+bsv <- c(sv$v%*%diag(ifelse(sv$d > 0, 1/sv$d, 0))%*%t(sv$u)%*%y)
+bm <- crossprod(xstd, ystd)/diag(crossprod(xstd))
+# q <- 0.5
+lammax <- max((2*(1 - q))^(1 - q)*(2-q)^(q-2)*abs(crossprod(xstd, ystd))^(2-q)*diag(crossprod(xstd))^(q - 1))
+eps <- 10^(-4)
+# eps = lam*sum(|b|^q)
+# eps/sum(|b|^q) = lam
+
+# lammin <- eps/sum(abs(bsv)^q)
+lammin <- eps/sum(abs(bm)^q)
+
+mylams <- exp(seq(log(lammax), 
+                  log(lammin),
+                  length.out = 50))
+
+betas <- matrix(nrow = ncol(xstd), ncol = length(mylams))
+start <- rep(0, ncol(xstd))
+for (k in 1:ncol(betas)) {
+  myest <- powCD(y = ystd, X = xstd, q = q, sigma.sq = n, 
+                 lambda = mylams[k]/n, tol = 10^(-14),
+                 start = start)
+  start <- myest
+  betas[, k] <- myest
+}
+obetas <- sweep(betas, 1, xscales, "/")*yscale
+  
+  # Create the output object
+  obj <- list("coeff" = obetas, "lambda_seq" = mylams)
+  
+  # Assign class
+  class(obj) <- "powCD"
+  
+  if (is.null(obj)) stop("powCD_wrapper is returning NULL!")
+  
+  # Return the object
+  return(obj)
+}
+
+coef.powCD <- function(out) {
+  # Extract the 'coeff' matrix from the 'out' object
+  coeff_matrix <- out[["coeff"]]
+  
+  if (is.null(out$coeff)) stop("coef.powCD: Coefficients are NULL!")
+  # Return the coefficient matrix
+  return(coeff_matrix)
+}
+
+predict.powCD <- function(out, xnew) {
+  # Perform matrix multiplication between new data and the coefficient matrix
+  prediction <- xnew %*% out[["coeff"]]
+  
+  if (is.null(xnew)) stop("predict.powCD: xnew is NULL!")
+  if (is.null(out$coeff)) stop("predict.powCD: Coefficients are NULL!")
+  
+  # Return the predictions
+  return(prediction)
+}
+```
+
+
+```{r}
+## Degrees of freedom and risk simulations
+library(bestsubset)
+glmnet.control(fdev=0)
+
+# Set some overall simulation parameters
+n = 70; p = 30 # Size of training set, and number of predictors
+nval = n # Size of validation set
+nrep = 500 # Number of repetitions
+seed = 0 # Random number generator seed
+s = 5 # Number of nonzero coefficients
+beta.type = 2 # Coefficient type
+
+## Risk simulations
+nrep = 20
+reg.funs = list()
+# reg.funs[["Best subset"]] = function(x,y) bs(x,y,intercept=FALSE)
+reg.funs[["Forward stepwise"]] = function(x,y) fs(x,y,intercept=FALSE)
+
+# We use a bit of a hack here to get the lasso to return only one solution
+# of each size k=0,...,p: for each k, we take the last solution along it
+# encounters along the path
+reg.funs[["Lasso"]] = function(x,y) {
+  out = lasso(x,y,intercept=FALSE,nlam=300)
+  class(out) = "lasso2"; return(out)
+}
+# Now define custom coef and predict functions: where the hacking happens
+coef.lasso2 = function(object, s=NULL, gamma=NULL) {
+  beta = as.matrix(coef.lasso(object,s,gamma))
+  nlam = object$nlambda
+  nzs = colSums(beta != 0)
+  j = nlam - rev(match(p:0, rev(nzs), NA))
+  return(beta[,j])
+}
+predict.lasso2 = function(object, newx, s=NULL) {
+  if (missing(newx)) newx = object$x
+  if (object$intercept) newx = cbind(rep(1,nrow(newx)),newx)
+  return(newx %*% coef.lasso2(object,s))
+}
+
+reg.funs[["PowCD q = 0.1"]] = function(x,y) powCD_wrapper(x,y,q=0.1,nlambda=50)
+reg.funs[["PowCD q = 0.25"]] = function(x,y) powCD_wrapper(x,y,q=0.25,nlambda=50)
+reg.funs[["PowCD q = 0.5"]] = function(x,y) powCD_wrapper(x,y,q=0.5,nlambda=50)
+reg.funs[["PowCD q = 0.75"]] = function(x,y) powCD_wrapper(x,y,q=0.75,nlambda=50)
+reg.funs[["PowCD q = 1"]] = function(x,y) powCD_wrapper(x,y,q=1,nlambda=50)
+```
+
+```{r}
+# Run the master simulation functions at (snr,rho) = (0.35,0.7) (hard setting)
+# and (snr,rho) = (0,2) (easy setting)
+
+nrep = 20
+
+sim.obj.losnr = sim.master(n,p,nval,reg.funs=reg.funs,nrep=nrep,seed=seed,
+                           rho=0.35,s=s,beta.type=beta.type,snr=0.7,verbose=TRUE)
+sim.obj.hisnr = sim.master(n,p,nval,reg.funs=reg.funs,nrep=nrep,seed=seed,
+                           rho=0.00,s=s,beta.type=beta.type,snr=2.0,verbose=TRUE)
+
+plot(sim.obj.losnr, what="risk", main="SNR=0.7, Cor=0.35", legend=FALSE, h=4, w=5.5)
+plot(sim.obj.hisnr, what="risk", main="SNR=2.0, Cor=0.00", legend=FALSE, h=4, w=5.5)
+
+
+plot(sim.obj.losnr, what="risk", main="SNR=0.7, Cor=0.35", legend=FALSE,
+     make.pdf=TRUE, fig.dir="~/Downloads/Research_Spring_2025", file.name="snr.lo_new", h=4, w=5.5)
+plot(sim.obj.hisnr, what="risk", main="SNR=2.0, Cor=0.00", make.pdf=TRUE,
+     fig.dir="~/Downloads/Research_Spring_2025", file.name="snr.hi_new", h=4, w=5.5)
+```
+

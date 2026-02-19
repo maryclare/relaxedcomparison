@@ -1,0 +1,62 @@
+---
+title: "fig.lo"
+author: "Ning Duan"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Adapted from sim.hi5.R and fig.hi5.R
+
+```{r}
+# From sim.hi5.R
+# Run the code below to reproduce the figures without rerunning the sims
+
+library(bestsubset)
+n = 10; p = 50
+#file.list = system(paste0("ls /Users/duanning/Downloads/Rep_rds_med/sim.n",n,".p",p,".*.rds"),intern=TRUE)
+file.list = system(paste0("ls /Users/duanning/Downloads/Research_Spring_2025/Rep_rds_lo_2025_new/sim.n",n,".p",p,".*.rds"),intern=TRUE)
+
+method.nums = c(2,1,3,4)
+method.names = c("Forward stepwise","Lasso","Relaxed lasso", "PowCD")
+
+# Validation tuning
+
+s = 5
+
+# From fig.hi5.R
+plot.from.file(file.list, what="risk", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.risk.rel"))
+
+plot.from.file(file.list, what="error", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.err.rel"))
+
+plot.from.file(file.list, what="prop", tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.prop"))
+
+plot.from.file(file.list, what="nonzero", tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.nzs"))
+
+plot.from.file(file.list, what="F", tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.F"))
+
+
+```

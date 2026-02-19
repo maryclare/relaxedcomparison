@@ -1,0 +1,670 @@
+## ----setup, include=FALSE-----------------------------------------------------
+knitr::opts_chunk$set(echo = TRUE)
+
+
+## -----------------------------------------------------------------------------
+# library(devtools)
+# install_github(repo="ryantibs/best-subset", subdir="bestsubset")
+library(bestsubset)
+glmnet.control(fdev=0)
+# library(devtools)
+# install_github("maryclare/powopt")
+library(powopt)
+library(L0Learn)
+#install.packages("slam")
+#install.packages("/Library/gurobi1103/macos_universal2/R/gurobi_11.0-3_R_4.4.0.tgz", 
+#                 repos = NULL, 
+#                 type = "binary")
+rm(list=ls())
+
+
+## -----------------------------------------------------------------------------
+# We need number of tuning values of q, ''nq''. The default of ''nq'' should be 1!
+powCD_wrapper <- function(x, y, nlambda, nq=1) {
+  # Standardize data (based on glmnet code)
+yscale <-sqrt(sum(y^2)) 
+ystd <- y/yscale
+xscales <- apply(x, 2, function(xx) {
+  sqrt(mean((xx - mean(xx))^2))
+})
+xstd <- sweep(x, 2, xscales, "/")
+sv <- svd(xstd)
+bsv <- c(sv$v%*%diag(ifelse(sv$d > 0, 1/sv$d, 0))%*%t(sv$u)%*%y)
+bm <- crossprod(xstd, ystd)/diag(crossprod(xstd))
+# q <- 0.5
+
+  # Set up the q sequence if nq > 1, otherwise use the single value of q
+  # q_seq <- if (nq > 1) seq(0.1, 1, length.out = nq) else q
+  q_seq <- seq(0.1, 1, length.out = nq)
+
+  # Initialize the coefficient matrix to hold all values of beta.pow for different q
+  p <- ncol(x)
+  total_cols <- nlambda * length(q_seq)
+  beta.pow_all <- matrix(0, p, total_cols)
+  
+  # Initialize the column names for the final beta.pow_all matrix
+  col_names <- character(total_cols)
+  
+  # Initialize column counter for beta.pow_all
+  col_counter <- 1
+  
+  # Loop over each q in the q sequence
+  for (q_val in q_seq) {
+    # Calculate lambda_max for the current q
+    n <- nrow(x)
+    
+    lammax <- max((2*(1 - q_val))^(1 - q_val)*(2-q_val)^(q_val-2)*abs(crossprod(xstd, ystd))^(2-q_val)*diag(crossprod(xstd))^(q_val - 1))
+eps <- 10^(-4)
+# eps = lam*sum(|b|^q_val)
+# eps/sum(|b|^q_val) = lam
+
+# lammin <- eps/sum(abs(bsv)^q_val)
+lammin <- eps/sum(abs(bm)^q_val)
+
+mylams <- exp(seq(log(lammax), 
+                  log(lammin),
+                  length.out = nlambda))
+    
+    betas <- matrix(nrow = ncol(xstd), ncol = length(mylams))
+start <- rep(0, ncol(xstd))
+for (k in 1:ncol(betas)) {
+  myest <- powCD(y = ystd, X = xstd, q = q_val, sigma.sq = n, 
+                 lambda = mylams[k]/n, tol = 10^(-7),
+                 start = start)
+  start <- myest
+  betas[, k] <- myest
+}
+obetas <- sweep(betas, 1, xscales, "/")*yscale
+    
+    # Add the results to the main beta.pow_all matrix and name the columns
+    beta.pow_all[, col_counter:(col_counter + nlambda - 1)] <- obetas
+    
+    # Create column names for this range of lambda values
+    for (i in 1:nlambda) {
+      col_names[col_counter] <- paste0("lambda = ", round(mylams[i], 4), 
+                                       ", q = ", round(q_val, 2))
+      col_counter <- col_counter + 1
+    }
+  }
+  
+  # Set the column names of the beta.pow_all matrix
+  colnames(beta.pow_all) <- col_names
+  
+  # Create the output object (same as before, but now with all betas for different q's)
+  obj <- list("coeff" = beta.pow_all, "lambda_seq" = mylams)
+  
+  # Assign class
+  class(obj) <- "powCD"
+  
+  # Return the object
+  return(obj)
+}
+
+coef.powCD <- function(out) {
+  # Extract the 'coeff' matrix from the 'out' object
+  coeff_matrix <- out[["coeff"]]
+  
+  if (is.null(out$coeff)) stop("coef.powCD: Coefficients are NULL!")
+  # Return the coefficient matrix
+  return(coeff_matrix)
+}
+
+predict.powCD <- function(out, xnew) {
+  # Perform matrix multiplication between new data and the coefficient matrix
+  prediction <- xnew %*% out[["coeff"]]
+  
+  if (is.null(xnew)) stop("predict.powCD: xnew is NULL!")
+  if (is.null(out$coeff)) stop("predict.powCD: Coefficients are NULL!")
+  
+  # Return the predictions
+  return(prediction)
+}
+
+
+## -----------------------------------------------------------------------------
+# Set some overall simulation parameters
+n = 50; p = 50 # Size of training set, and number of predictors
+# note: if n=50 and p=50, change the tolerance to 1e-7 in powcd.
+nval = n # Size of validation set
+nrep = 1 # Number of repetitions for a given setting
+# nrep=100 for n=10 or 50, p = 50
+seed = 0 # Random number generator seed
+s = 5 # Number of nonzero coefficients
+type.vec = c(1:3,5) # Simulation settings to consider
+rho.vec = c(0,0.35,0.7) # Pairwise predictor correlations
+snr.vec = exp(seq(log(0.05),log(6),length=10)) # Signal-to-noise ratios
+
+stem = paste0("sim.n",n,".p",p)
+
+# Regression functions: lasso, forward stepwise, and best subset selection
+reg.funs = list()
+reg.funs[["Lasso"]] = function(x,y) lasso(x,y,intercept=FALSE,nlam=50)
+reg.funs[["Forward stepwise"]] = function(x,y) fs(x,y,intercept=FALSE)
+#reg.funs[["Best subset"]] = function(x,y) bs(x,y,intercept=FALSE,
+#                                             time.limit=1800,
+#                                             params=list(Threads=4))
+reg.funs[["Relaxed lasso"]] = function(x,y) lasso(x,y,intercept=FALSE,
+                                                  nrelax=10,nlam=50)
+reg.funs[["PowCD"]] = function(x,y) powCD_wrapper(x,y,nlambda=50, nq = 10)
+
+# Also incorporate L0Learn algorithms from Hazimeh and Mazumder (2017)
+#reg.funs[["L0Learn 1"]] = function(x,y)L0Learn.fit(x,y,penalty="L0",algorithm="CDPSI",nLambda=50,intercept=FALSE)
+#reg.funs[["L0Learn 2"]] = function(x,y) L0Learn.fit(x,y,penalty="L0L1",algorithm="CDPSI",nGamma=10,nLambda=50, intercept=FALSE)
+
+
+## -----------------------------------------------------------------------------
+sim.master.rce <- function (n, p, nval, reg.funs, nrep = 50, seed = NULL, 
+                            verbose = FALSE, file = NULL, file.rep = 5, 
+                            rho = 0, s = 5, beta.type = 1, snr = 1) 
+{
+  this.call = match.call()
+  if (!is.null(seed)) 
+    set.seed(seed)
+
+  N = length(reg.funs)
+  reg.names = names(reg.funs)
+  if (is.null(reg.names)) 
+    reg.names = paste("Method", 1:N)
+
+  err.train = err.val = err.test = prop = risk = nzs = fpos = fneg = F1 = opt = runtime = vector(mode = "list", length = N)
+  ## NEW (RCE)
+  ce = vector(mode = "list", length = N)
+
+  names(err.train) = names(err.val) = names(err.test) = names(prop) = 
+    names(risk) = names(nzs) = names(fpos) = names(fneg) = 
+    names(F1) = names(opt) = names(runtime) <- reg.names
+  ## NEW (RCE)
+  names(ce) <- reg.names
+
+  for (j in 1:N) {
+    err.train[[j]] = err.val[[j]] = err.test[[j]] = prop[[j]] = 
+      risk[[j]] = nzs[[j]] = fpos[[j]] = fneg[[j]] = F1[[j]] = 
+      opt[[j]] = runtime[[j]] <- matrix(NA, nrep, 1)
+    ## NEW (RCE)
+    ce[[j]] <- matrix(NA, nrep, 1)
+  }
+
+  filled = rep(FALSE, N)
+  err.null = risk.null = sigma = rep(NA, nrep)
+  ## NEW (RCE)
+  ce.null = rep(NA, nrep)
+
+  for (i in 1:nrep) {
+    if (verbose) {
+      cat(sprintf("Simulation %i (of %i) ...\n", i, nrep))
+      cat("  Generating data ...\n")
+    }
+
+    xy.obj = sim.xy(n, p, nval, rho, s, beta.type, snr)
+
+    ## existing relative risk baseline
+    risk.null[i] = diag(t(xy.obj$beta) %*% xy.obj$Sigma %*% xy.obj$beta)
+    err.null[i]  = risk.null[i] + xy.obj$sigma^2
+    sigma[i]     = xy.obj$sigma
+
+    ## NEW (RCE baseline)
+    ce.null[i]  = diag(t(xy.obj$beta) %*% xy.obj$beta)
+
+    for (j in 1:N) {
+      if (verbose) {
+        cat(sprintf("  Applying regression method %i (of %i) ...\n", j, N))
+      }
+
+      tryCatch({
+        runtime[[j]][i] = system.time({
+          reg.obj = reg.funs[[j]](xy.obj$x, xy.obj$y)
+        })[1]
+
+        betahat = as.matrix(coef(reg.obj))
+        m  = ncol(betahat)
+        nc = nrow(betahat)
+
+        if (nc == p + 1) {
+          intercept = TRUE
+          betahat0  = betahat[1, ]
+          betahat   = betahat[-1, ]
+        } else {
+          intercept = FALSE
+        }
+
+        muhat.train = as.matrix(predict(reg.obj, xy.obj$x))
+        muhat.val   = as.matrix(predict(reg.obj, xy.obj$xval))
+
+        if (!filled[j]) {
+          err.train[[j]] = err.val[[j]] = err.test[[j]] = prop[[j]] = 
+            risk[[j]] = nzs[[j]] = fpos[[j]] = fneg[[j]] = F1[[j]] = 
+            opt[[j]] = matrix(NA, nrep, m)
+          ## NEW (RCE)
+          ce[[j]] = matrix(NA, nrep, m)
+
+          filled[j] = TRUE
+        }
+
+        err.train[[j]][i, ] = colMeans((muhat.train - xy.obj$y)^2)
+        err.val[[j]][i, ]   = colMeans((muhat.val   - xy.obj$yval)^2)
+
+        delta = betahat - xy.obj$beta
+
+        ## existing risk (prediction-space, with Sigma)
+        risk[[j]][i, ] = diag(t(delta) %*% xy.obj$Sigma %*% delta)
+        if (intercept)
+          risk[[j]][i, ] = risk[[j]][i, ] + betahat0^2
+
+        err.test[[j]][i, ] = risk[[j]][i, ] + xy.obj$sigma^2
+        prop[[j]][i, ]     = 1 - err.test[[j]][i, ]/err.null[i]
+
+        ## NEW (RCE – coefficient-space “risk”)
+        ce[[j]][i, ] = diag(t(delta) %*% delta)
+
+        nzs[[j]][i, ] = colSums(betahat != 0)
+        tpos          = colSums((betahat != 0) * (xy.obj$beta != 0))
+        fpos[[j]][i, ] = nzs[[j]][i, ] - tpos
+        fneg[[j]][i, ] = colSums((betahat == 0) * (xy.obj$beta != 0))
+
+        F1[[j]][i, ] = 2 * tpos / (2 * tpos + fpos[[j]][i, ] + fneg[[j]][i, ])
+        opt[[j]][i, ] = (err.test[[j]][i, ] - err.train[[j]][i, ]) / err.train[[j]][i, ]
+
+      }, error = function(err) {
+        if (verbose) {
+          cat(paste("    Oops! Something went wrong, see error message",
+                    "below; recording all metrics here as NAs ...\n"))
+          cat("    ***** Error message *****\n")
+          cat(sprintf("    %s\n", err$message))
+          cat("    *** End error message ***\n")
+        }
+      })
+    }
+
+    if (!is.null(file) && file.rep > 0 && i %% file.rep == 0) {
+      saveRDS(
+        bestsubset:::enlist(err.train, err.val, err.test, err.null,
+               prop, risk, risk.null, nzs, fpos, fneg,
+               F1, opt, sigma, runtime,
+               ## NEW (RCE)
+               ce, ce.null),
+        file = file
+      )
+    }
+  }
+
+  out = bestsubset:::enlist(err.train, err.val, err.test, err.null,
+               prop, risk, risk.null, nzs, fpos, fneg,
+               F1, opt, sigma, runtime,
+               ## NEW (RCE)
+               ce, ce.null)
+
+  if (!is.null(file)) 
+    saveRDS(out, file)
+
+  out = bestsubset:::choose.tuning.params(out)
+
+  out = c(out, list(rho = rho, s = s, beta.type = beta.type,
+                    snr = snr, call = this.call))
+  class(out) = "sim"
+
+  if (!is.null(file)) {
+    saveRDS(out, file)
+    invisible(out)
+  } else {
+    return(out)
+  }
+}
+
+
+## -----------------------------------------------------------------------------
+file.list = c() # Vector of files for the saved rds files
+for (beta.type in type.vec) {
+  for (rho in rho.vec) {
+    name = paste0("rce.", stem, ".beta", beta.type, sprintf(".rho%0.2f", rho))
+    for (snr in snr.vec) {
+      file = paste0("Rep_rds_new/", name, ".snr", round(snr,2), ".rds")
+      cat("..... NEW SIMULATION .....\n")
+      cat("--------------------------\n")
+      cat(paste0("File: ", file, "\n\n"))
+
+      sim.master.rce(n, p, nval, reg.funs=reg.funs, nrep=nrep, seed=seed, s=s,
+                 verbose=TRUE, file=file, rho=rho, beta.type=beta.type, snr=snr)
+
+      file.list = c(file.list, file)
+      cat("\n")
+    }
+  }
+}
+
+
+## -----------------------------------------------------------------------------
+plot.from.file <- function (file.list,
+                            row = c("beta", "rho", "snr"),
+                            col = c("rho", "beta", "snr"),
+                            method.nums = NULL, method.names = NULL,
+                            what = c("error", "risk", "rce", "prop", "F", "nonzero"),  ## RCE
+                            rel.to = NULL,
+                            tuning = c("validation", "oracle"),
+                            type = c("ave", "med"),
+                            std = TRUE, lwd = 1, pch = 19,
+                            main = NULL, ylim = NULL,
+                            legend.pos = c("bottom", "right", "top", "left", "none"),
+                            make.pdf = FALSE, fig.dir = ".", file.name = "sim",
+                            w = 8, h = 10)
+{
+  if (!require("ggplot2", quietly = TRUE)) {
+    stop("Package ggplot2 not installed (required here)!")
+  }
+  row  = match.arg(row)
+  col  = match.arg(col)
+  if (row == col)
+    stop("row and col must be different")
+  what       = match.arg(what)
+  tuning     = match.arg(tuning)
+  type       = match.arg(type)
+  legend.pos = match.arg(legend.pos)
+
+  sim.obj = readRDS(file.list[1])
+  if (is.null(method.nums))
+    method.nums = 1:length(sim.obj$err.test)
+  if (is.null(method.names))
+    method.names = names(sim.obj$err.test[method.nums])
+  N = length(method.nums)
+
+  if (is.null(rel.to)) {
+    base.num  = 0
+    ## Different default base names by metric                     ## RCE
+    base.name = switch(what,
+                       error   = "Bayes",
+                       risk    = "null model",
+                       rce     = "true coefficients",
+                       prop    = "null model",
+                       F       = "null model",
+                       nonzero = "null model")
+  } else {
+    base.num  = which(method.nums == rel.to)
+    base.name = tolower(method.names[base.num])
+  }
+
+  ylab = switch(what,
+                error   = paste0("Relative test error (to ", base.name, ")"),
+                risk    = paste0("Relative risk (to ", base.name, ")"),
+                rce     = paste0("Relative coefficient error (to ", base.name, ")"),  ## RCE
+                prop    = "Proportion of variance explained",
+                F       = "F classification of nonzeros",
+                nonzero = "Number of nonzeros")
+
+  yvec = ybar = beta.vec = rho.vec = snr.vec = c()
+
+  for (i in 1:length(file.list)) {
+    sim.obj = readRDS(file.list[i])
+
+    beta.vec = c(beta.vec, rep(sim.obj$beta.type, N))
+    rho.vec  = c(rho.vec,  rep(sim.obj$rho,       N))
+    snr.vec  = c(snr.vec,  rep(sim.obj$snr,       N))
+
+    ## pick the right raw metric object                          ## RCE
+    z = sim.obj[[switch(what,
+                        error   = "err.test",
+                        risk    = "risk",
+                        rce     = "ce",
+                        prop    = "prop",
+                        F       = "F1",
+                        nonzero = "nzs")]]
+
+    res = tune.and.aggregate(sim.obj, z)
+
+    if (what == "prop" || what == "F" || what == "nonzero") {
+      yvec = c(yvec,
+               res[[paste0("z.", substr(tuning, 1, 3), ".", type)]][method.nums])
+      ybar = c(ybar,
+               res[[paste0("z.", substr(tuning, 1, 3), ".",
+                          ifelse(type == "ave", "std", "mad"))]][method.nums])
+    } else {
+      ## For error, risk, rce: turn them into relative quantities
+      met = res[[paste0("z.", substr(tuning, 1, 3))]]
+
+      if (base.num == 0 && what == "error") {
+        denom = sim.obj$sigma^2
+      } else if (base.num == 0 && what == "risk") {
+        denom = sim.obj$risk.null
+      } else if (base.num == 0 && what == "rce") {               ## RCE
+        denom = sim.obj$ce.null
+      } else {
+        denom = met[[base.num]]
+      }
+
+      z.rel = lapply(met, function(v) v / denom)
+      res2  = tune.and.aggregate(sim.obj, z.rel, tune = FALSE)
+
+      yvec = c(yvec,
+               unlist(res2[[paste0("z.", type)]])[method.nums])
+      ybar = c(ybar,
+               unlist(res2[[paste0("z.", ifelse(type == "ave",
+                                                "std", "mad"))]])[method.nums])
+    }
+  }
+
+  xvec = snr.vec
+  xlab = "Signal-to-noise ratio"
+
+  if (is.null(ylim))
+    ylim = range(yvec - ybar, yvec + ybar)
+
+  beta.vec = factor(beta.vec)
+  rho.vec  = factor(rho.vec)
+  snr.vec  = factor(snr.vec)
+
+  levels(beta.vec) = paste("Beta-type",   levels(beta.vec))
+  levels(rho.vec)  = paste("Correlation", levels(rho.vec))
+
+  dat = data.frame(
+    x    = xvec,
+    y    = yvec,
+    se   = ybar,
+    beta = beta.vec,
+    rho  = rho.vec,
+    snr  = snr.vec,
+    Method = factor(rep(method.names, length = length(xvec)))
+  )
+
+  gp = ggplot(dat, aes(x = x, y = y, color = Method)) +
+    xlab(xlab) + ylab(ylab) +
+    coord_cartesian(ylim = ylim) +
+    geom_line(lwd = lwd) +
+    geom_point(pch = pch) +
+    facet_grid(formula(paste(row, "~", col))) +
+    theme_bw() +
+    theme(legend.pos = legend.pos)
+
+  if (!("snr" %in% c(row, col))) {
+    snr.breaks = round(exp(seq(from = min(log(xvec)),
+                               to   = max(log(xvec)), length = 4)), 2)
+    gp = gp + scale_x_continuous(trans = "log", breaks = snr.breaks)
+  }
+
+  if (std)
+    gp = gp + geom_errorbar(aes(ymin = y - se, ymax = y + se), width = 0.02)
+
+  if (what == "error")
+    gp = gp + geom_line(aes(x = x, y = 1 + x),
+                        lwd = 0.5, linetype = 3, color = "black")
+  if (what == "prop")
+    gp = gp + geom_line(aes(x = x, y = x/(1 + x)),
+                        lwd = 0.5, linetype = 3, color = "black")
+  if (what == "nonzero")
+    gp = gp + geom_line(aes(x = x, y = sim.obj$s),
+                        lwd = 0.5, linetype = 3, color = "black")
+
+  if (!is.null(main))
+    gp = gp + ggtitle(main)
+  if (!is.null(ylim))
+    gp = gp + coord_cartesian(ylim = ylim)
+
+  if (make.pdf)
+    ggsave(sprintf("%s/%s.pdf", fig.dir, file.name),
+           height = h, width = w, device = "pdf")
+  else
+    gp
+}
+
+
+## -----------------------------------------------------------------------------
+# From sim.lo.R
+# Run the code below to reproduce the figures without rerunning the sims
+library(bestsubset)
+n = 50; p = 100
+file.list = system(paste0("ls unity_n50_p100_old/rce.sim.n",n,".p",p,".*.rds"),intern=TRUE)
+# file.list = system(paste0("ls Rep_rds_new/rce.sim.n", n, ".p", p, ".beta2.rho0.35.*.rds"), intern = TRUE)
+method.nums = c(2,1,3,4)
+method.names = c("Forward stepwise","Lasso","Relaxed lasso","PowCD")
+
+# Validation tuning
+
+# From fig.lo.R
+# plot.from.file(file.list, what="rce", rel.to=NULL, tuning="val",
+#                method.nums=method.nums, method.names=method.names,
+#                legend.pos="bottom", make.pdf=TRUE, fig.dir="~/Downloads/Research_Spring_2025",
+#                file.name=paste0("sim.n",n,".p",p,".val.rce"))
+
+
+
+## -----------------------------------------------------------------------------
+# Run the code below to reproduce the figures without rerunning the sims
+library(bestsubset)
+n = 50; p = 1000
+file.list = system(paste0("ls unity_Rcpp_Rep_rds_hi5_2025_new/rce.sim.n",n,".p",p,".*.rds"),intern=TRUE)
+# file.list = system(paste0("ls Rep_rds_new/rce.sim.n", n, ".p", p, ".beta2.rho0.35.*.rds"), intern = TRUE)
+method.nums = c(2,1,3,4)
+method.names = c("Forward stepwise","Lasso","Relaxed lasso","PowCD")
+
+# Validation tuning
+
+# gp <- plot.from.file(
+#   file.list,
+#   what = "rce",
+#   ylim = NULL,
+#   rel.to=NULL, tuning="val",
+#                method.nums=method.nums, method.names=method.names,
+#                legend.pos="bottom", 
+#   #make.pdf=TRUE, fig.dir="~/Downloads/Research_Spring_2025",
+#                #file.name=paste0("sim.n",n,".p",p,".val.rce")
+# )
+# 
+# gp + coord_cartesian() + facet_grid(beta ~ rho, scales="free_y")
+# 
+# ggplot2::ggsave(
+#   filename = paste0(
+#     "~/Downloads/Research_Spring_2025/",
+#     paste0("sim.n", n, ".p", p, ".val.rce_freey"),
+#     ".pdf"
+#   ),
+#   width = 8,
+#   height = 10,
+# )
+
+# From fig.lo.R
+# plot.from.file(file.list, what="rce", rel.to=NULL, tuning="val",
+#                method.nums=method.nums, method.names=method.names,
+#                legend.pos="bottom", make.pdf=TRUE, fig.dir="~/Downloads/Research_Spring_2025",
+#                file.name=paste0("sim.n",n,".p",p,".val.rce"))
+
+
+## -----------------------------------------------------------------------------
+plot.from.file.wrap12 <- function(...,
+                                  what = "rce",
+                                  ncol = 3,
+                                  legend.pos = "bottom",
+                                  lwd = 1, pch = 19,
+                                  std = TRUE) {
+
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package ggplot2 not installed!")
+  }
+
+  gp0 <- plot.from.file(..., what = what, ylim = NULL,
+                        std = std, lwd = lwd, pch = pch,
+                        legend.pos = legend.pos)
+
+  dat <- gp0$data
+
+  # change x from factor/character to numeric (very important)
+  dat$x <- as.numeric(as.character(dat$x))
+
+  # 12 panels: rho x beta (do not include snr!)
+  dat$panel <- interaction(dat$rho, dat$beta, drop = TRUE, sep = ", ")
+
+  ggplot2::ggplot(dat, ggplot2::aes(x = x, y = y, color = Method)) +
+    ggplot2::geom_line(linewidth = lwd) +
+    ggplot2::geom_point(shape = pch) +
+    (if (std) ggplot2::geom_errorbar(ggplot2::aes(ymin = y - se, ymax = y + se),
+                                     width = 0.02) else NULL) +
+    ggplot2::facet_wrap(~ panel, scales = "free_y", ncol = ncol) +
+    ggplot2::xlab("Signal-to-noise ratio") +
+    ggplot2::ylab(gp0$labels$y) +
+    ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = legend.pos) +
+    ggplot2::scale_x_continuous(
+      trans = "log",
+      breaks = round(exp(seq(min(log(dat$x)), max(log(dat$x)), length.out = 4)), 2)
+    )
+}
+
+
+## -----------------------------------------------------------------------------
+plot.from.file.wrap12(file.list, what="rce", legend.pos = "right")
+ggplot2::ggsave(
+  filename = paste0(
+    "~/Downloads/Research_Spring_2025/",
+    paste0("tol_sim.n", n, ".p", p, ".val.rce_freey_wrap12.pdf")
+  ),
+  width = 8,
+  height = 10,
+)
+
+# plot  what = c("error", "risk", "prop", "F", "nonzero") using plot.from.file.wrap12
+plot.from.file.wrap12(file.list, what="error", legend.pos = "right")
+ggplot2::ggsave(
+  filename = paste0(
+    "~/Downloads/Research_Spring_2025/",
+    paste0("tol_sim.n", n, ".p", p, ".val.error_wrap12.pdf")
+  ),
+  width = 8,
+  height = 10,
+)
+
+plot.from.file.wrap12(file.list, what="risk", legend.pos = "right")
+ggplot2::ggsave(
+  filename = paste0(
+    "~/Downloads/Research_Spring_2025/",
+    paste0("tol_sim.n", n, ".p", p, ".val.risk_wrap12.pdf")
+  ),
+  width = 8,
+  height = 10,
+)
+
+plot.from.file.wrap12(file.list, what="prop", legend.pos = "right")
+ggplot2::ggsave(
+  filename = paste0(
+    "~/Downloads/Research_Spring_2025/",
+    paste0("tol_sim.n", n, ".p", p, ".val.prop_wrap12.pdf")
+  ),
+  width = 8,
+  height = 10,
+)
+
+plot.from.file.wrap12(file.list, what="F", legend.pos = "right")
+ggplot2::ggsave(
+  filename = paste0(
+    "~/Downloads/Research_Spring_2025/",
+    paste0("tol_sim.n", n, ".p", p, ".val.F_wrap12.pdf")
+  ),
+  width = 8,
+  height = 10,
+)
+
+plot.from.file.wrap12(file.list, what="nonzero", legend.pos = "right")
+ggplot2::ggsave(
+  filename = paste0(
+    "~/Downloads/Research_Spring_2025/",
+    paste0("tol_sim.n", n, ".p", p, ".val.nonzero_wrap12.pdf")
+  ),
+  width = 8,
+  height = 10,
+)
+

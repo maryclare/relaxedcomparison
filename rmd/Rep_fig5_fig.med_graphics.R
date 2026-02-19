@@ -1,0 +1,81 @@
+## ----setup, include=FALSE-----------------------------------------------------
+knitr::opts_chunk$set(echo = TRUE)
+
+
+## -----------------------------------------------------------------------------
+# From sim.med.R
+# Run the code below to reproduce the figures without rerunning the sims
+
+library(bestsubset)
+n = 500; p = 100
+#file.list = system(paste0("ls /Users/duanning/Downloads/Rep_rds_med/sim.n",n,".p",p,".*.rds"),intern=TRUE)
+file.list = system(paste0("ls /Users/duanning/Downloads/Research_Spring_2025/Rep_rds_med_2025_new/sim.n",n,".p",p,".*.rds"),intern=TRUE)
+method.nums = c(2,1,3,4)
+method.names = c("Forward stepwise","Lasso","Relaxed lasso", "PowCD")
+
+# Validation tuning
+
+s = 5
+
+# From fig.med.R
+plot.from.file(file.list, what="risk", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.risk.rel"))
+
+plot.from.file(file.list, what="error", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.err.rel"))
+
+plot.from.file(file.list, what="prop", tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.prop"))
+
+plot.from.file(file.list, what="nonzero", tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.nzs"))
+
+plot.from.file(file.list, what="F", tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               main=paste0("n=",n,", p=",p,", s=",s), make.pdf=TRUE,
+               fig.dir="~/Downloads/Research_Spring_2025/fig5_supp_plots",
+               file.name=paste0("sim.n",n,".p",p,".val.F"))
+
+
+
+
+## -----------------------------------------------------------------------------
+rm(list=ls())
+library(bestsubset)
+library(ggplot2)
+library(patchwork)
+n = 500; p = 100; s = 5
+file.list = system(paste0("ls /Users/duanning/Downloads/Research_Spring_2025/Rep_rds_med_2025_new/sim.n",n,".p",p,".beta2.rho0.35.*.rds"),intern=TRUE)
+method.nums = c(2,1,3,4)
+method.names = c("Forward stepwise","Lasso","Relaxed lasso","PowCD")
+# Create individual plots for each metric
+plot_error <- plot.from.file(file.list, what="error", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names, make.pdf=FALSE, w = 8, h = 6) + theme(legend.position = "none")
+plot_prop <- plot.from.file(file.list, what="prop", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names, make.pdf=FALSE, w = 8, h = 6) + theme(legend.position = "none")
+plot_nzs <- plot.from.file(file.list, what="nonzero", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names, make.pdf=FALSE, w = 8, h = 6) + theme(legend.position = "none")
+plot_F <- plot.from.file(file.list, what="F", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names, make.pdf=FALSE, w = 8, h = 6) + theme(legend.position = "none")
+# Arrange the plots in a 2x2 grid
+grid_arranged <- (plot_error + plot_prop + plot_nzs + plot_F) +
+  plot_layout(ncol = 2, guides = "collect") &
+  theme(legend.position = "right")
+# Save the combined plot as a PDF
+beta <- 2; rho <- 0.35
+outfile <- sprintf("~/Downloads/Research_Spring_2025/fig5_supp_plots/med.sim.n%d.p%d.beta%d.rho%.2f.pdf",
+                   n, p, beta, rho)
+ggsave(filename = outfile, plot = grid_arranged, width = 10, height = 8)
+

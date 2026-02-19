@@ -1,0 +1,199 @@
+## ----setup, include=FALSE-----------------------------------------------------
+knitr::opts_chunk$set(echo = TRUE)
+
+
+## -----------------------------------------------------------------------------
+library(bestsubset)
+glmnet.control(fdev=0)
+library(devtools)
+# install_github("maryclare/powopt")
+library(powopt)
+library(L0Learn)
+rm(list=ls())
+
+
+## -----------------------------------------------------------------------------
+# We need number of tuning values of q, ''nq''. The default of ''nq'' should be 1!
+powCD_wrapper <- function(x, y, q = 1, nlambda, nq = 1) {
+  # Standardize the matrix x
+  # x_standardized <- apply(x, 2, function(z) {(z)/(sqrt(mean(z^2) - mean(z)^2))})
+  
+  x_standardized <- apply(x, 2, function(z) {(z-mean(z))/(sqrt(mean(z^2) - mean(z)^2))})
+  y_standardized <- (y - mean(y)) / sqrt(mean(y^2) - mean(y)^2)
+  
+  # Calculate <x_j, y> for each j on standardized x
+  x_y_dot_standardized <- colSums(x_standardized * y)
+  
+  # Find the maximum absolute value of <x_j, y>
+  max_abs_x_y_dot_standardized <- max(abs(x_y_dot_standardized))
+  
+  # Set up the q sequence if nq > 1, otherwise use the single value of q
+  q_seq <- if (nq > 1) seq(0.1, 1, length.out = nq) else q
+  
+  # Initialize the coefficient matrix to hold all values of beta.pow for different q
+  p <- ncol(x)
+  total_cols <- nlambda * length(q_seq)
+  beta.pow_all <- matrix(0, p, total_cols)
+  
+  # Initialize the column names for the final beta.pow_all matrix
+  col_names <- character(total_cols)
+  
+  # Initialize column counter for beta.pow_all
+  col_counter <- 1
+  
+  # Small value epsilon for lambda_min
+    epsilon <- 0.00001
+  
+  # Loop over each q in the q sequence
+  for (q_val in q_seq) {
+    # Calculate lambda_max for the current q
+    n <- nrow(x)
+    lambda_max_standardized <- (1/n) * (max_abs_x_y_dot_standardized / (2 - q_val))^(2 - q_val) * (2 - 2 * q_val)^(1 - q_val)
+    
+    # Calculate lambda_min
+    lambda_min <- epsilon * lambda_max_standardized
+    
+    # Generate the sequence of lambda values on a log scale
+    lambda_seq_manual <- exp(seq(log(lambda_max_standardized), 
+                                 log(lambda_min), length.out = nlambda))
+    
+    # Calculate the coefficients for each lambda and store them in beta.pow
+    beta.pow <- matrix(0, p, nlambda)
+    
+    # Calculate the coefficients using the powCD function for each lambda
+    beta.pow[, 1] <- powCD(X = x_standardized, y = y, 
+                           sigma.sq = n, lambda = lambda_seq_manual[1], 
+                           q = q_val, rand.restart = 0, start = rep(0, p))
+    
+    for (i in 2:nlambda) {
+      beta.pow[, i] <- powCD(X = x_standardized, y = y, 
+                             sigma.sq = n, lambda = lambda_seq_manual[i], q = q_val, 
+                             rand.restart = 0, start = beta.pow[, i-1])
+    }
+    
+    # Add the results to the main beta.pow_all matrix and name the columns
+    beta.pow_all[, col_counter:(col_counter + nlambda - 1)] <- beta.pow
+    
+    # Create column names for this range of lambda values
+    for (i in 1:nlambda) {
+      col_names[col_counter] <- paste0("lambda = ", round(lambda_seq_manual[i], 4), 
+                                       ", q = ", round(q_val, 2))
+      col_counter <- col_counter + 1
+    }
+  }
+  
+  # Set the column names of the beta.pow_all matrix
+  colnames(beta.pow_all) <- col_names
+  
+  # Create the output object (same as before, but now with all betas for different q's)
+  obj <- list("coeff" = beta.pow_all, "lambda_seq" = lambda_seq_manual)
+  
+  # Assign class
+  class(obj) <- "powCD"
+  
+  # Return the object
+  return(obj)
+}
+
+coef.powCD <- function(out) {
+  # Extract the 'coeff' matrix from the 'out' object
+  coeff_matrix <- out[["coeff"]]
+  
+  if (is.null(out$coeff)) stop("coef.powCD: Coefficients are NULL!")
+  # Return the coefficient matrix
+  return(coeff_matrix)
+}
+
+predict.powCD <- function(out, xnew) {
+  # Perform matrix multiplication between new data and the coefficient matrix
+  prediction <- xnew %*% out[["coeff"]]
+  
+  if (is.null(xnew)) stop("predict.powCD: xnew is NULL!")
+  if (is.null(out$coeff)) stop("predict.powCD: Coefficients are NULL!")
+  
+  # Return the predictions
+  return(prediction)
+}
+
+
+## -----------------------------------------------------------------------------
+# Set some overall simulation parameters
+n = 100; p = 10 # Size of training set, and number of predictors
+nval = n # Size of validation set
+nrep = 10 # Number of repetitions for a given setting
+seed = 0 # Random number generator seed
+s = 5 # Number of nonzero coefficients
+type.vec = c(1:3,5) # Simulation settings to consider
+rho.vec = c(0,0.35,0.7) # Pairwise predictor correlations
+snr.vec = exp(seq(log(0.05),log(6),length=10)) # Signal-to-noise ratios
+stem = paste0("sim.n",n,".p",p)
+
+# Regression functions: lasso, forward stepwise, and best subset selection
+reg.funs = list()
+reg.funs[["Lasso"]] = function(x,y) lasso(x,y,intercept=FALSE,nlam=50)
+reg.funs[["Forward stepwise"]] = function(x,y) fs(x,y,intercept=FALSE)
+reg.funs[["Best subset"]] = function(x,y) bs(x,y,intercept=FALSE,
+                                             time.limit=1800,
+                                             params=list(Threads=4))
+reg.funs[["Relaxed lasso"]] = function(x,y) lasso(x,y,intercept=FALSE,
+                                                  nrelax=10,nlam=50)
+reg.funs[["PowCD"]] = function(x,y) powCD_wrapper(x,y,nlambda=50, nq = 10)
+
+# Also incorporate L0Learn algorithms from Hazimeh and Mazumder (2017)
+reg.funs[["L0Learn 1"]] = function(x,y)L0Learn.fit(x,y,penalty="L0",algorithm="CDPSI",nLambda=50,intercept=FALSE)
+reg.funs[["L0Learn 2"]] = function(x,y) L0Learn.fit(x,y,penalty="L0L1",algorithm="CDPSI",nGamma=10,nLambda=50, intercept=FALSE)
+
+file.list = c() # Vector of files for the saved rds files
+for (beta.type in type.vec) {
+  for (rho in rho.vec) {
+    name = paste0(stem, ".beta", beta.type, sprintf(".rho%0.2f", rho))
+    for (snr in snr.vec) {
+      file = paste0("Rep_rds/", name, ".snr", round(snr,2), ".rds")
+      cat("..... NEW SIMULATION .....\n")
+      cat("--------------------------\n")
+      cat(paste0("File: ", file, "\n\n"))
+
+      sim.master(n, p, nval, reg.funs=reg.funs, nrep=nrep, seed=seed, s=s,
+                 verbose=TRUE, file=file, rho=rho, beta.type=beta.type, snr=snr)
+
+      file.list = c(file.list, file)
+      cat("\n")
+    }
+  }
+}
+
+
+## -----------------------------------------------------------------------------
+# From sim.lo.R
+# Run the code below to reproduce the figures without rerunning the sims
+library(bestsubset)
+n = 100; p = 10
+# file.list = system(paste0("ls Rep_rds/sim.n",n,".p",p,".*.rds"),intern=TRUE)
+file.list = system(paste0("ls Rep_rds/sim.n", n, ".p", p, ".beta2.rho0.35.*.rds"), intern = TRUE)
+method.nums = c(2,1,4,5)
+method.names = c("Forward stepwise","Lasso","Relaxed lasso","PowCD")
+
+# Validation tuning
+
+# From fig.lo.R
+plot.from.file(file.list, what="error", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               legend.pos="bottom", make.pdf=TRUE, fig.dir="~/Downloads/Research_Spring_2025",
+               file.name="lo.err", w = 8, h = 6)
+
+plot.from.file(file.list, what="prop", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               legend.pos="bottom", make.pdf=TRUE, fig.dir="~/Downloads/Research_Spring_2025",
+               file.name="lo.prop", w = 8, h = 6)
+
+plot.from.file(file.list, what="nonzero", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               legend.pos="bottom", make.pdf=TRUE, fig.dir="~/Downloads/Research_Spring_2025",
+               file.name="lo.nzs", w = 8, h = 6)
+
+plot.from.file(file.list, what="F", rel.to=NULL, tuning="val",
+               method.nums=method.nums, method.names=method.names,
+               legend.pos="bottom", make.pdf=TRUE, fig.dir="~/Downloads/Research_Spring_2025",
+               file.name="lo.F", w = 8, h = 6)
+
+

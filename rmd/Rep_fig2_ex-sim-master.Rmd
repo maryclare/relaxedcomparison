@@ -1,0 +1,172 @@
+---
+title: "ex.sim.master"
+author: "Ning Duan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(bestsubset)
+glmnet.control(fdev=0)
+library(devtools)
+# install_github("maryclare/powopt")
+library(powopt)
+rm(list=ls())
+```
+
+
+# Define three functions powCD_wrapper, coef.powCD, predict.powCD
+
+```{r}
+powCD_wrapper <- function(x, y, q, nlambda) {
+  # Standardize the matrix x
+  x_standardized <- apply(x, 2, function(z) {(z)/(sqrt(mean(z^2) - mean(z)^2))})
+  y_standardized <- y
+  
+  #x_standardized <- apply(x, 2, function(z) {(z-mean(z))/(sqrt(mean(z^2) - mean(z)^2))})
+  #y_standardized <- (y) / (sqrt(mean(y^2) - mean(y)^2))
+  
+  # Calculate <x_j, y> for each j on standardized x and y
+  x_y_dot_standardized <- colSums(x_standardized * y_standardized)
+  
+  # Find the maximum absolute value of <x_j, y>
+  max_abs_x_y_dot_standardized <- max(abs(x_y_dot_standardized))
+  
+  # Calculate lambda_max
+  n <- nrow(x)  # Assuming the number of observations is the number of rows in x
+  lambda_max_standardized <- (1/n) * (max_abs_x_y_dot_standardized / (2 - q))^(2 - q) * (2 - 2 * q)^(1 - q)
+  
+  # Small value epsilon for lambda_min
+  epsilon <- 0.00001
+  
+  # Calculate lambda_min
+  #lambda_min <- epsilon * lambda_max_standardized
+  
+  bm <- crossprod(x_standardized, y_standardized)/diag(crossprod(x_standardized))
+  eps <- 10^(-7)
+  lambda_min <- eps/sum(abs(bm)^q)
+  
+  # Generate the sequence of lambda values on a log scale
+  lambda_seq_manual <- exp(seq(log(lambda_max_standardized), 
+                               log(lambda_min), length.out = nlambda))
+  
+  # Initialize the coefficient matrix
+  p <- ncol(x)
+  beta.pow <- matrix(0, p, nlambda)
+  
+  # Calculate the coefficients using the powCD function for each lambda
+  beta.pow[,1] <- powCD(X = x_standardized, y = y_standardized, 
+                        sigma.sq = n, lambda = lambda_seq_manual[1], 
+                        q = q, rand.restart = 0, start = rep(0, p))
+  
+  for (i in 2:nlambda) {
+    beta.pow[,i] <- powCD(X = x_standardized, y = y_standardized, 
+                          sigma.sq = n, lambda = lambda_seq_manual[i], q = q, 
+                          rand.restart = 0, start = beta.pow[,i-1])
+  }
+  
+  # Create the output object
+  obj <- list("coeff" = beta.pow, "lambda_seq" = lambda_seq_manual)
+  
+  # Assign class
+  class(obj) <- "powCD"
+  
+  if (is.null(obj)) stop("powCD_wrapper is returning NULL!")
+  
+  # Return the object
+  return(obj)
+}
+
+coef.powCD <- function(out) {
+  # Extract the 'coeff' matrix from the 'out' object
+  coeff_matrix <- out[["coeff"]]
+  
+  if (is.null(out$coeff)) stop("coef.powCD: Coefficients are NULL!")
+  # Return the coefficient matrix
+  return(coeff_matrix)
+}
+
+predict.powCD <- function(out, xnew) {
+  # Perform matrix multiplication between new data and the coefficient matrix
+  prediction <- xnew %*% out[["coeff"]]
+  
+  if (is.null(xnew)) stop("predict.powCD: xnew is NULL!")
+  if (is.null(out$coeff)) stop("predict.powCD: Coefficients are NULL!")
+  
+  # Return the predictions
+  return(prediction)
+}
+```
+
+
+```{r}
+## Degrees of freedom and risk simulations
+library(bestsubset)
+glmnet.control(fdev=0)
+
+# Set some overall simulation parameters
+n = 70; p = 30 # Size of training set, and number of predictors
+nval = n # Size of validation set
+nrep = 500 # Number of repetitions
+seed = 0 # Random number generator seed
+s = 5 # Number of nonzero coefficients
+beta.type = 2 # Coefficient type
+
+## Risk simulations
+nrep = 20
+reg.funs = list()
+# reg.funs[["Best subset"]] = function(x,y) bs(x,y,intercept=FALSE)
+reg.funs[["Forward stepwise"]] = function(x,y) fs(x,y,intercept=FALSE)
+
+# We use a bit of a hack here to get the lasso to return only one solution
+# of each size k=0,...,p: for each k, we take the last solution along it
+# encounters along the path
+reg.funs[["Lasso"]] = function(x,y) {
+  out = lasso(x,y,intercept=FALSE,nlam=300)
+  class(out) = "lasso2"; return(out)
+}
+# Now define custom coef and predict functions: where the hacking happens
+coef.lasso2 = function(object, s=NULL, gamma=NULL) {
+  beta = as.matrix(coef.lasso(object,s,gamma))
+  nlam = object$nlambda
+  nzs = colSums(beta != 0)
+  j = nlam - rev(match(p:0, rev(nzs), NA))
+  return(beta[,j])
+}
+predict.lasso2 = function(object, newx, s=NULL) {
+  if (missing(newx)) newx = object$x
+  if (object$intercept) newx = cbind(rep(1,nrow(newx)),newx)
+  return(newx %*% coef.lasso2(object,s))
+}
+
+reg.funs[["PowCD q = 0.1"]] = function(x,y) powCD_wrapper(x,y,q=0.1,nlambda=50)
+reg.funs[["PowCD q = 0.25"]] = function(x,y) powCD_wrapper(x,y,q=0.25,nlambda=50)
+reg.funs[["PowCD q = 0.5"]] = function(x,y) powCD_wrapper(x,y,q=0.5,nlambda=50)
+reg.funs[["PowCD q = 0.75"]] = function(x,y) powCD_wrapper(x,y,q=0.75,nlambda=50)
+reg.funs[["PowCD q = 1"]] = function(x,y) powCD_wrapper(x,y,q=1,nlambda=50)
+```
+
+```{r}
+# Run the master simulation functions at (snr,rho) = (0.35,0.7) (hard setting)
+# and (snr,rho) = (0,2) (easy setting)
+
+nrep = 20
+
+sim.obj.losnr = sim.master(n,p,nval,reg.funs=reg.funs,nrep=nrep,seed=seed,
+                           rho=0.35,s=s,beta.type=beta.type,snr=0.7,verbose=TRUE)
+sim.obj.hisnr = sim.master(n,p,nval,reg.funs=reg.funs,nrep=nrep,seed=seed,
+                           rho=0.00,s=s,beta.type=beta.type,snr=2.0,verbose=TRUE)
+
+plot(sim.obj.losnr, what="risk", main="SNR=0.7, Cor=0.35", legend=FALSE, h=4, w=5.5)
+
+plot(sim.obj.losnr, what="risk", main="SNR=0.7, Cor=0.35", legend=FALSE,
+     make.pdf=TRUE, fig.dir="~/Downloads/Research_Spring_2025", file.name="snr.lo", h=4, w=5.5)
+plot(sim.obj.hisnr, what="risk", main="SNR=2.0, Cor=0.00", make.pdf=TRUE,
+     fig.dir="~/Downloads/Research_Spring_2025", file.name="snr.hi", h=4, w=5.5)
+```
+
