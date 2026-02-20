@@ -190,10 +190,9 @@ obetas_75 <- sweep(betas_75, 1, xscales, "/")*yscale
   
   yhat.fs = predict(fs(x,y,intercept=FALSE))[, 1:31] # At some point we should figure out why it's giving us 32
   yhat.bs = bestsubset::predict.bs(bestsubset::bs(x,y,intercept=FALSE))
-  fit_bess = bess(x,y, method = "sequential", s.list= 1:min(n,p))
-  temp = predict(fit_bess,newdata = x)
-  temp2 = cbind(0,t(temp))
-  yhat.bs2 = temp2
+    # best subset using bess package
+    fit_bess = bess(x,y, method = "sequential", s.list= 1:min(n,p)) # needs correction
+    yhat.bs2 = predict(fit_bess) # needs correction
   
 # intercept?
   ip.fs[r,] = colSums(yhat.fs * eps)
